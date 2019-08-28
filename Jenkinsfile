@@ -8,7 +8,7 @@ pipeline {
     }
   }
   options {
-    timeout(time: 20, unit: 'MINUTES') 
+    timeout(time: 30, unit: 'MINUTES') 
   }
   environment {
       def templateName = "${s2iimage}~${env.GIT_URL}#${env.GIT_BRANCH}"
@@ -49,10 +49,19 @@ pipeline {
                 openshift.withProject() {
                   def bc = openshift.selector("bc", deploymentName)
                   if(bc) {
+                    sh "echo Build config exists, kicking off existing build"
+//                    bc.spec.resources.limits.cpu = '4'
+//                    bc.spec.resources.limits.memory = '4Gi'
+//                    openshift.apply(bc)
                     bc.startBuild()
                   }
                   else {
+                    sh "echo Creating new app as build config does not exist"
                     openshift.newApp("${templateName} --name ${deploymentName} --labels=name=${deploymentName},gitUrl=${env.GIT_URL},gitBranch=${env.GIT_BRANCH}") 
+//                    def bcnew = openshift.selector("bc", deploymentName)
+//                    bcnew.spec.resources.limits.cpu = '4'
+//                    bcnew.spec.resources.limits.memory = '4Gi'
+//                    openshift.apply(bcnew)
                   }
                 }
             }
@@ -65,9 +74,9 @@ pipeline {
             openshift.withCluster() {
                 openshift.withProject() {
                   def builds = openshift.selector("bc", deploymentName).related('builds')
-                  timeout(7) { 
-                    builds.untilEach(1) {i
-                      it.logs()
+                  timeout(12) { 
+                    builds.untilEach(1) {
+                      it.logs("-f")
                       return (it.object().status.phase == "Complete")
                     }
                   }
@@ -81,8 +90,8 @@ pipeline {
         script {
             openshift.withCluster() {
                 openshift.withProject() {
-                  def rm = openshift.selector("dc", deploymentName).rollout().latest()
-                  timeout(7) { 
+//                  def rm = openshift.selector("dc", deploymentName).rollout().latest()
+                  timeout(12) { 
                     openshift.selector("dc", deploymentName).related('pods').untilEach(1) {
                       return (it.object().status.phase == "Running")
                     }
@@ -97,27 +106,28 @@ pipeline {
         script {
             openshift.withCluster() {
                 openshift.withProject() {
-                  openshift.tag("${templateName}:latest", "${templateName}-staging:latest") 
+                  openshift.tag("${deploymentName}:latest", "${deploymentName}-staging:latest") 
                 }
             }
         }
       }
     }
-    stage('final delete') {
-      steps {
-        script {
-            openshift.withCluster() {
-                openshift.withProject() {
-                  openshift.selector("all", [ name : deploymentName ]).delete() 
-                  if (openshift.selector("secrets", deploymentName).exists()) { 
-                    openshift.selector("secrets", deploymentName).delete()
-                  }
-                }
-            }
-        }
-      }
-    }
+//    stage('final delete') {
+//      steps {
+//        script {
+//            openshift.withCluster() {
+//                openshift.withProject() {
+//                  openshift.selector("all", [ name : deploymentName ]).delete() 
+//                  if (openshift.selector("secrets", deploymentName).exists()) { 
+//                    openshift.selector("secrets", deploymentName).delete()
+//                  }
+//                }
+//           }
+//       }
+//      }
+//    }
 
   }
 }
+
 
