@@ -12,40 +12,32 @@ pipeline {
   }
   environment {
       def templateName = "${s2iimage}~${env.GIT_URL}#${env.GIT_BRANCH}"
-      def deploymentName = "${env.JOB_NAME}".replace("/","-").take(52)
+      def deploymentName = "${env.JOB_NAME}".replace("/","-").replace("%2F","-").take(52).toLowerCase()
   }
   stages {
     stage('preamble') {
         steps {
             script {
-                openshift.withCluster() {
+                try {
+                  openshift.withCluster() {
                     openshift.withProject() {
                         echo "Using project: ${openshift.project()}"
                     }
+                  }
+                  sh "echo ${templateName}"
+                  sh "echo ${deploymentName}"
                 }
-                sh "echo ${templateName}"
-                sh "echo ${deploymentName}"
+                catch (e) {
+                    echo "Error encountered: ${e}"
+                }
             }
         }
     }
-//    stage('cleanup') {
-//      steps {
-//        script {
-//            openshift.withCluster() {
-//                openshift.withProject() {
-//                  openshift.selector("all", [ template : templateName ]).delete() 
-//                  if (openshift.selector("secrets", templateName).exists()) { 
-//                    openshift.selector("secrets", templateName).delete()
-//                  }
-//                }
-//            }
-//        }
-//      }
-//    }
     stage('create') {
       steps {
         script {
-            openshift.withCluster() {
+            try {
+              openshift.withCluster() {
                 openshift.withProject() {
                   def bc = openshift.selector("bc", deploymentName)
                   if(bc.exists()) {
@@ -57,7 +49,7 @@ pipeline {
                   }
                   else {
                     sh "echo Creating new app as build config does not exist"
-                    openshift.newApp("${templateName} --name ${deploymentName} --labels=name=${deploymentName},gitUrl=${env.GIT_URL},gitBranch=${env.GIT_BRANCH}") 
+                    openshift.newApp("${templateName} --name ${deploymentName} --labels=name=${deploymentName}") 
 //                    def bcnew = openshift.selector("bc", deploymentName)
 //                    bcnew.spec.resources.limits.cpu = '4'
 //                    bcnew.spec.resources.limits.memory = '4Gi'
@@ -65,13 +57,18 @@ pipeline {
                   }
                 }
             }
+                }
+                catch (e) {
+                    echo "Error encountered: ${e}"
+                }
         }
       }
     }
     stage('build') {
       steps {
         script {
-            openshift.withCluster() {
+            try {
+              openshift.withCluster() {
                 openshift.withProject() {
                   def builds = openshift.selector("bc", deploymentName).related('builds')
                   timeout(12) { 
@@ -81,6 +78,10 @@ pipeline {
                     }
                   }
                 }
+              }
+            }
+            catch (e) {
+                    echo "Error encountered: ${e}"
             }
         }
       }
@@ -88,7 +89,8 @@ pipeline {
     stage('deploy') {
       steps {
         script {
-            openshift.withCluster() {
+            try {
+              openshift.withCluster() {
                 openshift.withProject() {
 //                  def rm = openshift.selector("dc", deploymentName).rollout().latest()
                   timeout(12) { 
@@ -97,6 +99,30 @@ pipeline {
                     }
                   }
                 }
+              }
+            }
+            catch (e) {
+                    echo "Error encountered: ${e}"
+            }
+        }
+      }
+    }
+    stage('expose route') {
+      steps {
+        script {
+            try {
+              openshift.withCluster() {
+                openshift.withProject() {
+                  def route = openshift.selector("route", deploymentName)
+                  if (!route.exists() ) {
+                      def result = openshift.selector("svc", deploymentName).expose()
+                      echo "Exposed service with result ${result}"
+                  }
+                }
+              }
+            }
+            catch (e) {
+                    echo "Error encountered: ${e}"
             }
         }
       }
@@ -104,10 +130,15 @@ pipeline {
     stage('tag') {
       steps {
         script {
-            openshift.withCluster() {
+            try {
+              openshift.withCluster() {
                 openshift.withProject() {
                   openshift.tag("${deploymentName}:latest", "${deploymentName}-staging:latest") 
                 }
+              }
+            }
+            catch (e) {
+                    echo "Error encountered: ${e}"
             }
         }
       }
@@ -129,5 +160,6 @@ pipeline {
 
   }
 }
+
 
 
