@@ -1,13 +1,18 @@
-def templatePath = 'https://raw.githubusercontent.com/openshift/nodejs-ex/master/openshift/templates/nodejs-mongodb.json' 
-def templateName = 'nodejs-mongodb-example' 
+
+def s2iimage = 'quay.io/quarkus/ubi-quarkus-native-s2i:19.1.1' 
+
 pipeline {
   agent {
     node {
-      label 'nodejs' 
+      label 'maven' 
     }
   }
   options {
     timeout(time: 20, unit: 'MINUTES') 
+  }
+  environment {
+      def templateName = "${s2iimage}~${env.GIT_URL}#${env.GIT_BRANCH}"
+      def deploymentName = "${env.JOB_NAME}".replace("/","-").take(52)
   }
   stages {
     stage('preamble') {
@@ -18,29 +23,37 @@ pipeline {
                         echo "Using project: ${openshift.project()}"
                     }
                 }
+                sh "echo ${templateName}"
+                sh "echo ${deploymentName}"
             }
         }
     }
-    stage('cleanup') {
-      steps {
-        script {
-            openshift.withCluster() {
-                openshift.withProject() {
-                  openshift.selector("all", [ template : templateName ]).delete() 
-                  if (openshift.selector("secrets", templateName).exists()) { 
-                    openshift.selector("secrets", templateName).delete()
-                  }
-                }
-            }
-        }
-      }
-    }
+//    stage('cleanup') {
+//      steps {
+//        script {
+//            openshift.withCluster() {
+//                openshift.withProject() {
+//                  openshift.selector("all", [ template : templateName ]).delete() 
+//                  if (openshift.selector("secrets", templateName).exists()) { 
+//                    openshift.selector("secrets", templateName).delete()
+//                  }
+//                }
+//            }
+//        }
+//      }
+//    }
     stage('create') {
       steps {
         script {
             openshift.withCluster() {
                 openshift.withProject() {
-                  openshift.newApp(templatePath) 
+                  def bc = openshift.selector("bc", deploymentName)
+                  if(bc) {
+                    bc.startBuild()
+                  }
+                  else {
+                    openshift.newApp("${templateName} --name ${deploymentName} --labels=name=${deploymentName},gitUrl=${env.GIT_URL},gitBranch=${env.GIT_BRANCH}") 
+                  }
                 }
             }
         }
@@ -51,9 +64,10 @@ pipeline {
         script {
             openshift.withCluster() {
                 openshift.withProject() {
-                  def builds = openshift.selector("bc", templateName).related('builds')
-                  timeout(5) { 
-                    builds.untilEach(1) {
+                  def builds = openshift.selector("bc", deploymentName).related('builds')
+                  timeout(7) { 
+                    builds.untilEach(1) {i
+                      it.logs()
                       return (it.object().status.phase == "Complete")
                     }
                   }
@@ -67,9 +81,9 @@ pipeline {
         script {
             openshift.withCluster() {
                 openshift.withProject() {
-                  def rm = openshift.selector("dc", templateName).rollout().latest()
-                  timeout(5) { 
-                    openshift.selector("dc", templateName).related('pods').untilEach(1) {
+                  def rm = openshift.selector("dc", deploymentName).rollout().latest()
+                  timeout(7) { 
+                    openshift.selector("dc", deploymentName).related('pods').untilEach(1) {
                       return (it.object().status.phase == "Running")
                     }
                   }
@@ -89,5 +103,21 @@ pipeline {
         }
       }
     }
+    stage('final delete') {
+      steps {
+        script {
+            openshift.withCluster() {
+                openshift.withProject() {
+                  openshift.selector("all", [ name : deploymentName ]).delete() 
+                  if (openshift.selector("secrets", deploymentName).exists()) { 
+                    openshift.selector("secrets", deploymentName).delete()
+                  }
+                }
+            }
+        }
+      }
+    }
+
   }
 }
+
