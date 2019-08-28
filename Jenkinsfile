@@ -48,7 +48,7 @@ pipeline {
             openshift.withCluster() {
                 openshift.withProject() {
                   def bc = openshift.selector("bc", deploymentName)
-                  if(bc) {
+                  if(bc.exists()) {
                     sh "echo Build config exists, kicking off existing build"
 //                    bc.spec.resources.limits.cpu = '4'
 //                    bc.spec.resources.limits.memory = '4Gi'
