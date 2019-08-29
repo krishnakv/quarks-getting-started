@@ -1,5 +1,6 @@
 
 def s2iimage = 'quay.io/quarkus/ubi-quarkus-native-s2i:19.1.1' 
+def mvnCmd = "./mvnw"
 
 pipeline {
   agent {
@@ -32,6 +33,14 @@ pipeline {
                 }
             }
         }
+    }
+    stage('Code Analysis') {
+                steps {
+                  script {
+                    sh "${mvnCmd} install -DskipTests=true"
+                    sh "${mvnCmd} sonar:sonar -Dsonar.host.url=http://sonarqube:9000 -DskipTests=true"
+                  }
+                }
     }
     stage('create') {
       steps {
