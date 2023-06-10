@@ -1,5 +1,6 @@
 
 def s2iimage = 'quay.io/quarkus/ubi-quarkus-native-s2i:19.1.1' 
+def mvnCmd = "./mvnw"
 
 pipeline {
   agent {
@@ -8,70 +9,88 @@ pipeline {
     }
   }
   options {
-    timeout(time: 20, unit: 'MINUTES') 
+    timeout(time: 30, unit: 'MINUTES') 
   }
   environment {
       def templateName = "${s2iimage}~${env.GIT_URL}#${env.GIT_BRANCH}"
-      def deploymentName = "${env.JOB_NAME}".replace("/","-").take(52)
+      def deploymentName = "${env.JOB_NAME}".replace("/","-").replace("%2F","-").take(52).toLowerCase()
   }
   stages {
     stage('preamble') {
         steps {
             script {
-                openshift.withCluster() {
+                try {
+                  openshift.withCluster() {
                     openshift.withProject() {
                         echo "Using project: ${openshift.project()}"
                     }
+                  }
+                  sh "echo ${templateName}"
+                  sh "echo ${deploymentName}"
                 }
-                sh "echo ${templateName}"
-                sh "echo ${deploymentName}"
+                catch (e) {
+                    echo "Error encountered: ${e}"
+                }
             }
         }
     }
-//    stage('cleanup') {
-//      steps {
-//        script {
-//            openshift.withCluster() {
-//                openshift.withProject() {
-//                  openshift.selector("all", [ template : templateName ]).delete() 
-//                  if (openshift.selector("secrets", templateName).exists()) { 
-//                    openshift.selector("secrets", templateName).delete()
-//                  }
-//                }
-//            }
-//        }
-//      }
-//    }
+    stage('Code Analysis') {
+                steps {
+                  script {
+                    sh "${mvnCmd} install -DskipTests=true"
+                    sh "${mvnCmd} sonar:sonar -Dsonar.host.url=http://sonarqube:9000 -DskipTests=true"
+                  }
+                }
+    }
     stage('create') {
       steps {
         script {
-            openshift.withCluster() {
+            try {
+              openshift.withCluster() {
                 openshift.withProject() {
                   def bc = openshift.selector("bc", deploymentName)
-                  if(bc) {
+                  if(bc.exists()) {
+                    sh "echo Build config exists, kicking off existing build"
+//                    bc.spec.resources.limits.cpu = '4'
+//                    bc.spec.resources.limits.memory = '4Gi'
+//                    openshift.apply(bc)
                     bc.startBuild()
                   }
                   else {
-                    openshift.newApp("${templateName} --name ${deploymentName} --labels=name=${deploymentName},gitUrl=${env.GIT_URL},gitBranch=${env.GIT_BRANCH}") 
+                    sh "echo Creating new app as build config does not exist"
+                    openshift.newApp("${templateName} --name ${deploymentName} --labels=name=${deploymentName}") 
+//                    def bcnew = openshift.selector("bc", deploymentName)
+//                    bcnew.spec.resources.limits.cpu = '4'
+//                    bcnew.spec.resources.limits.memory = '4Gi'
+//                    openshift.apply(bcnew)
                   }
                 }
             }
+                }
+                catch (e) {
+                    echo "Error encountered: ${e}"
+                }
         }
       }
     }
     stage('build') {
       steps {
         script {
-            openshift.withCluster() {
+            try {
+              openshift.withCluster() {
                 openshift.withProject() {
                   def builds = openshift.selector("bc", deploymentName).related('builds')
-                  timeout(7) { 
-                    builds.untilEach(1) {i
-                      it.logs()
+                  timeout(12) { 
+                    builds.untilEach(1) {
+                      it.logs("-f")
                       return (it.object().status.phase == "Complete")
                     }
                   }
                 }
+              }
+            }
+            catch (e) {
+                    echo "Error encountered: ${e}"
             }
         }
       }
@@ -79,15 +98,40 @@ pipeline {
     stage('deploy') {
       steps {
         script {
-            openshift.withCluster() {
+            try {
+              openshift.withCluster() {
                 openshift.withProject() {
-                  def rm = openshift.selector("dc", deploymentName).rollout().latest()
-                  timeout(7) { 
+//                  def rm = openshift.selector("dc", deploymentName).rollout().latest()
+                  timeout(12) { 
                     openshift.selector("dc", deploymentName).related('pods').untilEach(1) {
                       return (it.object().status.phase == "Running")
                     }
                   }
                 }
+              }
+            }
+            catch (e) {
+                    echo "Error encountered: ${e}"
+            }
+        }
+      }
+    }
+    stage('expose route') {
+      steps {
+        script {
+            try {
+              openshift.withCluster() {
+                openshift.withProject() {
+                  def route = openshift.selector("route", deploymentName)
+                  if (!route.exists() ) {
+                      def result = openshift.selector("svc", deploymentName).expose()
+                      echo "Exposed service with result ${result}"
+                  }
+                }
+              }
+            }
+            catch (e) {
+                    echo "Error encountered: ${e}"
             }
         }
       }
@@ -95,29 +139,36 @@ pipeline {
     stage('tag') {
       steps {
         script {
-            openshift.withCluster() {
+            try {
+              openshift.withCluster() {
                 openshift.withProject() {
-                  openshift.tag("${templateName}:latest", "${templateName}-staging:latest") 
+                  openshift.tag("${deploymentName}:latest", "${deploymentName}-staging:latest") 
                 }
+              }
+            }
+            catch (e) {
+                    echo "Error encountered: ${e}"
             }
         }
       }
     }
-    stage('final delete') {
-      steps {
-        script {
-            openshift.withCluster() {
-                openshift.withProject() {
-                  openshift.selector("all", [ name : deploymentName ]).delete() 
-                  if (openshift.selector("secrets", deploymentName).exists()) { 
-                    openshift.selector("secrets", deploymentName).delete()
-                  }
-                }
-            }
-        }
-      }
-    }
+//    stage('final delete') {
+//      steps {
+//        script {
+//            openshift.withCluster() {
+//                openshift.withProject() {
+//                  openshift.selector("all", [ name : deploymentName ]).delete() 
+//                  if (openshift.selector("secrets", deploymentName).exists()) { 
+//                    openshift.selector("secrets", deploymentName).delete()
+//                  }
+//                }
+//           }
+//       }
+//      }
+//    }
 
   }
 }
+
+
 
